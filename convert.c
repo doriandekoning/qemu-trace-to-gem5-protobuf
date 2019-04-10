@@ -5,6 +5,9 @@
 static FILE *trace_fp;
 #define HEADER_MAGIC_NUMBER 0xf2b177cb0aa429b4ULL
 #define HEADER_VERSION 4
+
+#define READ_LITERAL(Variable) {if(fread(&Variable, sizeof(Variable), 1, trace_fp) != 1) {return -1;}}
+
 typedef struct {
     uint64_t header_event_id; /* HEADER_EVENT_ID */
     uint64_t header_magic;    /* HEADER_MAGIC    */
@@ -30,10 +33,7 @@ int read_header() {
 		.header_version = 0,
 	};
 
-
-	if (fread(&header, sizeof(header), 1, trace_fp) != 1) {
-		return -1;
-	}
+	READ_LITERAL(header)
 
 	printf("Header event id: %llu\n", header.header_event_id);
 	printf("Header magic: 0x%llx\n", header.header_magic);
@@ -54,25 +54,16 @@ int read_mapping() {
 	//Loop until a trace record is found
 	while(1) {
 		uint64_t type;
-		if(fread(&type, sizeof(type), 1, trace_fp) != 1) {
-			printf("Unable to read header\n");
-			return -1;
-		}
+		READ_LITERAL(type)
 		//If type is 1 it is a trace record
 		if(type==1) {
 			break;
 		}
 
 		uint64_t eventid;
-		if(fread(&eventid, sizeof(eventid), 1, trace_fp) != 1) {
-			printf("Unable to read eventid\n");
-			return -1;
-		}
+		READ_LITERAL(eventid)
 		uint32_t length;
-		if(fread(&length, sizeof(length), 1, trace_fp) != 1) {
-			printf("Unable to read length\n");
-			return -1;
-		}
+		READ_LITERAL(length)
 
 		char *name = malloc(length + 1);
 		name[length] = '\0';
@@ -80,13 +71,40 @@ int read_mapping() {
 			printf("Error reading name\n");
 			return -1;
 		}
-		printf("%llu:%s\n",eventid, name);
 		free(name);
 
 	}
 
 	return 0;
 
+}
+
+int read_event() {
+	//Read the header
+	uint64_t event_id;
+	READ_LITERAL(event_id)
+	if(event_id != 75){
+		printf("Event types other than 75 are not supported\n");
+		return -1;
+	}
+	uint64_t timestamp;
+	READ_LITERAL(timestamp);
+	uint32_t rec_len;
+	READ_LITERAL(rec_len);
+	uint32_t  trace_pid;
+	READ_LITERAL(trace_pid);
+
+	//Read the 3 args (cpu, vaddr and info)
+	uint64_t cpu;
+	uint64_t vaddr;
+	uint64_t info;
+	READ_LITERAL(cpu)
+	READ_LITERAL(vaddr)
+	READ_LITERAL(info)
+
+	printf("Read event timestamp: %llu pid:%lu cpu:%llx vaddr:%08X info:%lx\n",
+	       timestamp, trace_pid, cpu, vaddr, info);
+	return 0;
 }
 
 
@@ -114,5 +132,17 @@ int main(int argc, char *argv[]) {
 		printf("Unable to read mapping\n");
 		fclose(trace_fp);
 		return 1;
+	}
+
+	for(int i= 0; i < 10; i++) {
+		if(read_event() != 0) {
+			return 1;
+		}
+		uint64_t entryType;
+		READ_LITERAL(entryType)
+		if(entryType != 1){
+			printf("Found unexpectd mapping\n");
+			return 1;
+		}
 	}
 }
