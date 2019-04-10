@@ -30,9 +30,16 @@ int read_header() {
 	return 0;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
+	if(argc == 1 ){
+		printf("First argument is the path of the trace input file to convert\n");
+		return 1;
+	}
+
+	printf("Trace input file: %s\n", argv[1]);
+
 	// Open file
-	trace_fp = fopen("tracefile", "r");
+	trace_fp = fopen(argv[1], "r");
 	if (!trace_fp){
 		printf("Could not open file\n");
 		return -1;
