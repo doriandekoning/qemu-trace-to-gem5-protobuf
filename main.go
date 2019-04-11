@@ -14,6 +14,8 @@ const ticksPerSec = 1000000000000
 const ticksPerNS = ticksPerSec / 1000000000 // 10^9 ns in a sec
 
 var startTimestamp = uint64(0)
+var fileSize int64
+var progress = int64(0)
 
 func main() {
 	inFilePath := os.Args[1]
@@ -34,6 +36,9 @@ func main() {
 	}
 	defer inFile.Close()
 
+	fileSize = getFileSize(inFile)
+	fmt.Printf("Total input file size: %dM\n", fileSize/1000000)
+
 	outFile, err := os.Create(outFilePath)
 	if err != nil {
 		panic(err)
@@ -46,7 +51,7 @@ func main() {
 	for true {
 		recordType := readUint64(inFile)
 		if recordType == 0 {
-			readEventMapping(inFile)
+			readEventMapping(inFile, false)
 		} else if recordType == 1 {
 			packet := readTraceEvent(inFile)
 			marshaledPacket, err := proto.Marshal(packet)
@@ -60,8 +65,28 @@ func main() {
 		} else {
 			panic("Unknown recordType encountered")
 		}
+
+		//Get current position
+		offset, err := inFile.Seek(0, 1)
+		if err != nil {
+			panic(err)
+		}
+		if (100 * offset / fileSize) > progress {
+			progress = (100 * offset / fileSize)
+			fmt.Printf("Currently %d%% done\n", progress)
+
+		}
+
 	}
 
+}
+
+func getFileSize(file *os.File) int64 {
+	fileInfo, err := file.Stat()
+	if err != nil {
+		panic(err)
+	}
+	return fileInfo.Size()
 }
 
 func writeFileHeader(file *os.File) {
@@ -126,11 +151,13 @@ func readTraceEvent(file *os.File) *pb.Packet {
 	return &pb.Packet{Addr: &vaddr, Tick: &timestampInTicks, Size: &recLen, Cmd: &cmd}
 }
 
-func readEventMapping(file *os.File) {
+func readEventMapping(file *os.File, print bool) {
 	eventID := readUint64(file)
 	length := readUint32(file)
-	name := readBytes(file, int(length))
-	fmt.Println(eventID, ":", string(name))
+	eventName := readBytes(file, int(length))
+	if print {
+		fmt.Println(eventID, ":", eventName)
+	}
 }
 
 func readUint64(file *os.File) uint64 {
