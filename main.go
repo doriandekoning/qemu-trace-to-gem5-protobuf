@@ -5,7 +5,15 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	pb "github.com/doriandekoning/qemu-trace-to-gem5-protobuf/messages"
+	"github.com/gogo/protobuf/proto"
 )
+
+const ticksPerSec = 1000000000000
+const ticksPerNS = ticksPerSec / 1000000000 // 10^9 ns in a sec
+
+var startTimestamp = uint64(0)
 
 func main() {
 	inFilePath := os.Args[1]
@@ -26,19 +34,59 @@ func main() {
 	}
 	defer inFile.Close()
 
-	readTraceHeader(inFile)
+	outFile, err := os.Create(outFilePath)
+	if err != nil {
+		panic(err)
+	}
+	defer outFile.Close()
 
+	writeFileHeader(outFile)
+
+	readTraceHeader(inFile)
 	for true {
 		recordType := readUint64(inFile)
 		if recordType == 0 {
 			readEventMapping(inFile)
 		} else if recordType == 1 {
-			readTraceEvent(inFile)
+			packet := readTraceEvent(inFile)
+			marshaledPacket, err := proto.Marshal(packet)
+			if err != nil {
+				panic(err)
+			}
+			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
+			outFile.Write(lengthVarint)
+			outFile.Write(marshaledPacket)
+
 		} else {
 			panic("Unknown recordType encountered")
 		}
 	}
 
+}
+
+func writeFileHeader(file *os.File) {
+	magicnumber := []byte{0x67, 0x65, 0x6d, 0x35}
+	_, err := file.Write(magicnumber)
+	if err != nil {
+		panic(err)
+	}
+
+	objectID := "objectid1"
+	tickFreq := uint64(1000000000000)
+	header := pb.PacketHeader{
+		ObjId:    &objectID,
+		TickFreq: &tickFreq,
+	}
+	headerBytes, err := proto.Marshal(&header)
+	if err != nil {
+		panic(err)
+	}
+
+	encodedLength := proto.EncodeVarint(uint64(len(headerBytes)))
+	_, err = file.Write(append(encodedLength, headerBytes...))
+	if err != nil {
+		panic(err)
+	}
 }
 
 func readTraceHeader(file *os.File) {
@@ -55,22 +103,27 @@ func readTraceHeader(file *os.File) {
 	}
 }
 
-func readTraceEvent(file *os.File) {
+func readTraceEvent(file *os.File) *pb.Packet {
 	eventID := readUint64(file)
 	if eventID != 75 {
 		panic("Only traces with only event 75 are supported")
 	}
 	//Read event general data
 	timestamp := readUint64(file)
+	if startTimestamp == 0 {
+		startTimestamp = timestamp
+	}
+	// RelativeTimestamp is the timestamp in ns from the start of the simulation
+	timestampInTicks := ticksPerNS * (timestamp - startTimestamp)
 	recLen := readUint32(file)
-	tracePid := readUint32(file)
+	readUint32(file) // tracePid
 	//Read event arguments (cpu, vaddr and info)
-	cpu := readUint64(file)
+	readUint64(file) // cpu
 	vaddr := readUint64(file)
-	info := readUint64(file)
-
-	fmt.Printf("Read event timestamp: %d pid:%d cpu:%x vaddr:%08X info:%x %d\n", timestamp, tracePid, cpu, vaddr, info, recLen)
-
+	readUint64(file) //info := USE TO determine cmd
+	cmd := uint32(1) //TODO get cmd from info
+	//TODO check if size is actually recLen
+	return &pb.Packet{Addr: &vaddr, Tick: &timestampInTicks, Size: &recLen, Cmd: &cmd}
 }
 
 func readEventMapping(file *os.File) {
