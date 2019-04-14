@@ -17,7 +17,7 @@ var fileSize int64
 var progress = int64(0)
 var buffer = []byte{}
 var bufferIndex int
-
+var totalEvents uint64
 
 func main() {
 	inFilePath := os.Args[1]
@@ -73,8 +73,9 @@ func main() {
 			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
 			outFile.Write(lengthVarint)
 			outFile.Write(marshaledPacket)
+			totalEvents++
 		} else {
-			fmt.Printf("%x\n", recordType)
+			fmt.Printf("%d:%x\n",totalEvents, recordType)
 			panic("Unknown recordType encountered")
 		}
 
@@ -196,6 +197,7 @@ func readBytes(file *os.File, amount int) []byte {
 	ret := make([]byte, amount)
 	_, err := file.Read(ret)
 	if err == io.EOF {
+		fmt.Println("Total amount of events:", totalEvents)
 		fmt.Println("End of file found")
 		os.Exit(0)
 	} else if err != nil {
