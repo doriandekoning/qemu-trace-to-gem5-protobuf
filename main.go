@@ -1,7 +1,8 @@
-package main
+ package main
 
 import (
 	"encoding/binary"
+	"bufio"
 	"fmt"
 	"io"
 	"os"
@@ -16,8 +17,9 @@ var startTimestamp = uint64(0)
 var fileSize int64
 var progress = int64(0)
 var buffer = []byte{}
-var bufferIndex int
-var totalEvents uint64
+var bufferIndex uint64
+var fileOffset uint64
+var inReader *bufio.Reader
 
 func main() {
 	inFilePath := os.Args[1]
@@ -37,6 +39,8 @@ func main() {
 		panic(err)
 	}
 	defer inFile.Close()
+
+	inReader = bufio.NewReader(inFile)
 
 	fileSize = getFileSize(inFile)
 	fmt.Printf("Total input file size: %dM\n", fileSize/1000000)
@@ -73,9 +77,7 @@ func main() {
 			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
 			outFile.Write(lengthVarint)
 			outFile.Write(marshaledPacket)
-			totalEvents++
 		} else {
-			fmt.Printf("%d:%x\n",totalEvents, recordType)
 			panic("Unknown recordType encountered")
 		}
 
@@ -194,14 +196,23 @@ func readUint32(file *os.File) uint32 {
 
 
 func readBytes(file *os.File, amount int) []byte {
-	ret := make([]byte, amount)
-	_, err := file.Read(ret)
+	if uint64(amount) <= uint64(len(buffer)) - bufferIndex {
+		bufferIndex += uint64(amount)
+		return buffer[(bufferIndex-uint64(amount)):bufferIndex]
+	}
+	//Not enough bytes in buffer
+	fileOffset += bufferIndex
+	if len(buffer) == 0 {
+	    buffer = make([]byte, 100000000)
+	}
+	fmt.Printf("%0.1f%%\n", 100*float64(fileOffset)/float64(fileSize))
+	_, err := file.ReadAt(buffer, int64(fileOffset))
 	if err == io.EOF {
-		fmt.Println("Total amount of events:", totalEvents)
 		fmt.Println("End of file found")
 		os.Exit(0)
 	} else if err != nil {
 		panic(err)
 	}
-	return ret
+	bufferIndex = uint64(amount)
+	return buffer[0:amount]
 }
