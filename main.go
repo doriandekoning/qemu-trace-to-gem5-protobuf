@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-
 	pb "github.com/doriandekoning/qemu-trace-to-gem5-protobuf/messages"
 	"github.com/gogo/protobuf/proto"
 )
@@ -16,6 +15,9 @@ const ticksPerNS = ticksPerSec / 1000000000 // 10^9 ns in a sec
 var startTimestamp = uint64(0)
 var fileSize int64
 var progress = int64(0)
+var buffer = []byte{}
+var bufferIndex int
+
 
 func main() {
 	inFilePath := os.Args[1]
@@ -45,15 +47,25 @@ func main() {
 	}
 	defer outFile.Close()
 
+	mappingFilePath := outFilePath + ".mapping"
+	mappingFile, err := os.Create(mappingFilePath)
+	if err != nil {
+	    panic(err)
+	}
+	defer mappingFile.Close()
+
 	writeFileHeader(outFile)
 
 	readTraceHeader(inFile)
 	for true {
 		recordType := readUint64(inFile)
 		if recordType == 0 {
-			readEventMapping(inFile, false)
+			readEventMapping(inFile, mappingFile)
 		} else if recordType == 1 {
 			packet := readTraceEvent(inFile)
+			if packet == nil {
+			    continue
+			}
 			marshaledPacket, err := proto.Marshal(packet)
 			if err != nil {
 				panic(err)
@@ -61,19 +73,20 @@ func main() {
 			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
 			outFile.Write(lengthVarint)
 			outFile.Write(marshaledPacket)
-
 		} else {
+			fmt.Printf("%x\n", recordType)
 			panic("Unknown recordType encountered")
 		}
 
 		//Get current position
+		//TODO refactor to reading new buffer
 		offset, err := inFile.Seek(0, 1)
 		if err != nil {
 			panic(err)
 		}
-		if (100 * offset / fileSize) > progress {
-			progress = (100 * offset / fileSize)
-			fmt.Printf("Currently %d%% done\n", progress)
+		if (1000 * offset / fileSize) > progress {
+			progress = (1000 * offset / fileSize)
+			fmt.Printf("Currently %.1f%% done\n", float64(progress)/10)
 
 		}
 
@@ -130,8 +143,9 @@ func readTraceHeader(file *os.File) {
 
 func readTraceEvent(file *os.File) *pb.Packet {
 	eventID := readUint64(file)
-	if eventID != 75 {
-		panic("Only traces with only event 75 are supported")
+	if eventID != 75  && eventID != uint64(0xfffffffffffffffe){
+		mesg := fmt.Sprintf("Only traces with eventID 75 are supported, found event with id: %d\n", eventID)
+		panic(mesg)
 	}
 	//Read event general data
 	timestamp := readUint64(file)
@@ -141,7 +155,12 @@ func readTraceEvent(file *os.File) *pb.Packet {
 	// RelativeTimestamp is the timestamp in ns from the start of the simulation
 	timestampInTicks := ticksPerNS * (timestamp - startTimestamp)
 	recLen := readUint32(file)
-	readUint32(file) // tracePid
+	readUint32(file) // tracePid	
+	if eventID == uint64(0xfffffffffffffffe) {
+		readBytes(file, int(recLen))
+		fmt.Println("Found dropped trace event")
+		return nil
+	}
 	//Read event arguments (cpu, vaddr and info)
 	readUint64(file) // cpu
 	vaddr := readUint64(file)
@@ -151,14 +170,17 @@ func readTraceEvent(file *os.File) *pb.Packet {
 	return &pb.Packet{Addr: &vaddr, Tick: &timestampInTicks, Size: &recLen, Cmd: &cmd}
 }
 
-func readEventMapping(file *os.File, print bool) {
+func readEventMapping(file *os.File, mappingFile *os.File) {
 	eventID := readUint64(file)
 	length := readUint32(file)
-	eventName := readBytes(file, int(length))
-	if print {
-		fmt.Println(eventID, ":", eventName)
+	eventName := string(readBytes(file, int(length)))
+
+	_, err := mappingFile.Write([]byte(fmt.Sprintf( "%d:%s\n", eventID, eventName)))
+	if err != nil {
+	    panic(err)
 	}
 }
+
 
 func readUint64(file *os.File) uint64 {
 	return binary.LittleEndian.Uint64(readBytes(file, 8))
@@ -169,20 +191,15 @@ func readUint32(file *os.File) uint32 {
 	return binary.LittleEndian.Uint32(readBytes(file, 4))
 }
 
-func finish(file *os.File) {
-	file.Close()
-	os.Exit(0)
-}
 
 func readBytes(file *os.File, amount int) []byte {
-	bytes := make([]byte, amount)
-
-	_, err := file.Read(bytes)
+	ret := make([]byte, amount)
+	_, err := file.Read(ret)
 	if err == io.EOF {
 		fmt.Println("End of file found")
-		finish(file)
+		os.Exit(0)
 	} else if err != nil {
 		panic(err)
 	}
-	return bytes
+	return ret
 }
