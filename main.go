@@ -1,4 +1,4 @@
- package main
+package main
 
 import (
 	"encoding/binary"
@@ -20,6 +20,12 @@ var buffer = []byte{}
 var bufferIndex uint64
 var fileOffset uint64
 var inReader *bufio.Reader
+var totalReads uint64
+var totalWrites uint64
+var cpus map[uint64]int
+var outFileBasePath string
+var largestTick uint64
+var outFiles []*os.File
 
 func main() {
 	inFilePath := os.Args[1]
@@ -28,12 +34,12 @@ func main() {
 	}
 	fmt.Println("Using input file: ", os.Args[1])
 
-	outFilePath := os.Args[2]
-	if outFilePath == "" {
+	outFileBasePath = os.Args[2]
+	if outFileBasePath == "" {
 		fmt.Println("No output file is provided")
 	}
 	fmt.Println("Using output file:", os.Args[2])
-
+	cpus = make(map[uint64]int)
 	inFile, err := os.Open(inFilePath)
 	if err != nil {
 		panic(err)
@@ -45,28 +51,22 @@ func main() {
 	fileSize = getFileSize(inFile)
 	fmt.Printf("Total input file size: %dM\n", fileSize/1000000)
 
-	outFile, err := os.Create(outFilePath)
-	if err != nil {
-		panic(err)
-	}
-	defer outFile.Close()
-
-	mappingFilePath := outFilePath + ".mapping"
+	mappingFilePath := outFileBasePath + ".mapping"
 	mappingFile, err := os.Create(mappingFilePath)
 	if err != nil {
 	    panic(err)
 	}
 	defer mappingFile.Close()
-
-	writeFileHeader(outFile)
+	defer closeOutFiles()
 
 	readTraceHeader(inFile)
+
 	for true {
 		recordType := readUint64(inFile)
 		if recordType == 0 {
 			readEventMapping(inFile, mappingFile)
 		} else if recordType == 1 {
-			packet := readTraceEvent(inFile)
+			packet, cpuId := readTraceEvent(inFile)
 			if packet == nil {
 			    continue
 			}
@@ -75,8 +75,8 @@ func main() {
 				panic(err)
 			}
 			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
-			outFile.Write(lengthVarint)
-			outFile.Write(marshaledPacket)
+			outFiles[cpuId].Write(lengthVarint)
+			outFiles[cpuId].Write(marshaledPacket)
 		} else {
 			panic("Unknown recordType encountered")
 		}
@@ -92,9 +92,27 @@ func main() {
 			fmt.Printf("Currently %.1f%% done\n", float64(progress)/10)
 
 		}
+	}
+	fmt.Println("Reads:", totalReads)
+	fmt.Println("Writes:", totalWrites)
+	fmt.Println("LargestTick:", largestTick)
+}
 
+func closeOutFiles() {
+	for _, file :=  range outFiles {
+		file.Close()
+	}
+}
+
+func createOutfile(cpuId int) *os.File {
+
+	outFile, err := os.Create(outFileBasePath + ".1")
+	if err != nil {
+		panic(err)
 	}
 
+	writeFileHeader(outFile)
+	return outFile
 }
 
 func getFileSize(file *os.File) int64 {
@@ -144,7 +162,7 @@ func readTraceHeader(file *os.File) {
 	}
 }
 
-func readTraceEvent(file *os.File) *pb.Packet {
+func readTraceEvent(file *os.File) (*pb.Packet, int) {
 	eventID := readUint64(file)
 	if eventID != 75  && eventID != uint64(0xfffffffffffffffe){
 		mesg := fmt.Sprintf("Only traces with eventID 75 are supported, found event with id: %d\n", eventID)
@@ -157,20 +175,36 @@ func readTraceEvent(file *os.File) *pb.Packet {
 	}
 	// RelativeTimestamp is the timestamp in ns from the start of the simulation
 	timestampInTicks := ticksPerNS * (timestamp - startTimestamp)
+	largestTick = timestampInTicks
 	recLen := readUint32(file)
 	readUint32(file) // tracePid	
 	if eventID == uint64(0xfffffffffffffffe) {
-		readBytes(file, int(recLen))
-		fmt.Println("Found dropped trace event")
-		return nil
+//		readBytes(file, int(recLen))
+		fmt.Println("Found dropped trace event", readUint64(file))
+		return nil, -1
 	}
 	//Read event arguments (cpu, vaddr and info)
-	readUint64(file) // cpu
+	qemuCpu := readUint64(file) // cpu
+	var cpu int
+	var ok bool
+	if cpu, ok = cpus[qemuCpu]; !ok {
+	    cpus[qemuCpu] = len(outFiles)
+	    outFiles = append(outFiles, createOutfile(len(outFiles)))
+	}
 	vaddr := readUint64(file)
-	readUint64(file) //info := USE TO determine cmd
-	cmd := uint32(1) //TODO get cmd from info
+	vaddr = vaddr%2147483648
+	info :=	readUint64(file)
+	qemuCmd :=  ((info >> 5)  & 0x1) // Last bit of info is 1 if it is a store operation
+	var cmd uint32
+	if qemuCmd == 0 {
+		cmd = 1
+		totalReads++
+	} else {
+		cmd = 4
+		totalWrites++
+	}
 	//TODO check if size is actually recLen
-	return &pb.Packet{Addr: &vaddr, Tick: &timestampInTicks, Size: &recLen, Cmd: &cmd}
+	return &pb.Packet{Addr: &vaddr, Tick: &timestampInTicks, Size: &recLen, Cmd: &cmd}, cpu
 }
 
 func readEventMapping(file *os.File, mappingFile *os.File) {
@@ -209,6 +243,10 @@ func readBytes(file *os.File, amount int) []byte {
 	_, err := file.ReadAt(buffer, int64(fileOffset))
 	if err == io.EOF {
 		fmt.Println("End of file found")
+	        fmt.Println("Reads:", totalReads)
+	        fmt.Println("Writes:", totalWrites)
+	        fmt.Println("LargestTick:", largestTick)
+		closeOutFiles()
 		os.Exit(0)
 	} else if err != nil {
 		panic(err)
