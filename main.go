@@ -82,12 +82,12 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
 			if split {
 				cpuIdUint := uint64(cpuId)
 				packet.CpuID = &cpuIdUint
 				cpuId = 0
 			}
+			lengthVarint := proto.EncodeVarint(uint64(len(marshaledPacket)))
 			outFiles[cpuId].Write(lengthVarint)
 			outFiles[cpuId].Write(marshaledPacket)
 		} else {
