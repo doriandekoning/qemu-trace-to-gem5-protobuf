@@ -198,6 +198,9 @@ func readTraceEvent(file *os.File) (*pb.Packet, int) {
 	}
 	//Read event arguments (cpu, vaddr and info)
 	qemuCpu := readUint64(file) // cpu
+	if !split {
+		qemuCpu = 0
+	}
 	var cpu int
 	var ok bool
 	if cpu, ok = cpus[qemuCpu]; !ok {
@@ -205,7 +208,6 @@ func readTraceEvent(file *os.File) (*pb.Packet, int) {
 		outFiles = append(outFiles, createOutfile(len(outFiles)))
 	}
 	vaddr := readUint64(file)
-	vaddr = vaddr % 2147483648
 	info := readUint64(file)
 	qemuCmd := ((info >> 5) & 0x1) // Last bit of info is 1 if it is a store operation
 	var cmd uint32
